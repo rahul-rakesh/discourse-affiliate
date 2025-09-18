@@ -34,6 +34,8 @@ class AffiliateProcessor
       rules["amzn.com"] = rule if postfix == "com"
       rules["amzn.to"] = create_amazon_rule("com") if postfix == "to"
       rules["amzn.eu"] = rule if postfix == "eu"
+      # Add support for amzn.in short links
+      rules["amzn.in"] = create_amazon_rule("in") if postfix == "in"
       rules["a.co"] = create_amazon_rule("com") if postfix == "co"
       rules["www.amazon.#{postfix}"] = rule
       rules["smile.amazon.#{postfix}"] = rule
