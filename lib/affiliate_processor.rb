@@ -1,6 +1,8 @@
 # frozen_string_literal: true
 
 class AffiliateProcessor
+  AMAZON_SHORT_DOMAINS = %w[amzn.to amzn.com amzn.eu amzn.in a.co].freeze
+
   def self.create_amazon_rule(domain)
     lambda do |url, uri|
       code = SiteSetting.get("affiliate_amazon_#{domain.gsub(".", "_")}")
@@ -22,6 +24,47 @@ class AffiliateProcessor
     end
   end
 
+  def self.expand_amazon_short_link(url)
+    begin
+      # Follow redirects to get the final Amazon URL
+      response = Excon.head(url, expects: [200, 301, 302, 303, 307, 308], middlewares: Excon.defaults[:middlewares] + [Excon::Middleware::RedirectFollower])
+      final_url = response.headers['Location'] || url
+
+      # Parse the final URL to extract the product ID and create a clean URL
+      final_uri = URI.parse(final_url)
+      if final_uri.host&.include?('amazon.')
+        # Extract ASIN/product ID from path
+        if match = final_uri.path.match(%r{/dp/([A-Z0-9]{10})|/gp/product/([A-Z0-9]{10})})
+          asin = match[1] || match[2]
+          # Create clean Amazon URL based on the domain
+          domain_mapping = {
+            'amazon.in' => 'in',
+            'amazon.com' => 'com',
+            'amazon.co.uk' => 'co_uk',
+            'amazon.de' => 'de',
+            'amazon.fr' => 'fr',
+            'amazon.co.jp' => 'co_jp',
+            'amazon.ca' => 'ca',
+            'amazon.com.au' => 'com_au',
+            'amazon.com.br' => 'com_br',
+            'amazon.com.mx' => 'com_mx',
+            'amazon.es' => 'es',
+            'amazon.it' => 'it',
+            'amazon.nl' => 'nl'
+          }
+
+          domain_key = domain_mapping[final_uri.host] || 'com'
+          return "https://#{final_uri.host}/dp/#{asin}"
+        end
+      end
+
+      final_url
+    rescue => e
+      Rails.logger.warn "Failed to expand Amazon short link #{url}: #{e.message}"
+      url
+    end
+  end
+
   def self.rules
     return @rules if @rules
     postfixes = %w[com com.au com.br com.mx ca cn co.jp co.uk de es fr in it nl to co eu]
@@ -34,7 +77,6 @@ class AffiliateProcessor
       rules["amzn.com"] = rule if postfix == "com"
       rules["amzn.to"] = create_amazon_rule("com") if postfix == "to"
       rules["amzn.eu"] = rule if postfix == "eu"
-      # Add support for amzn.in short links
       rules["amzn.in"] = create_amazon_rule("in") if postfix == "in"
       rules["a.co"] = create_amazon_rule("com") if postfix == "co"
       rules["www.amazon.#{postfix}"] = rule
@@ -63,12 +105,19 @@ class AffiliateProcessor
     uri = URI.parse(url)
 
     if uri.scheme == "http" || uri.scheme == "https"
+      # Check if this is an Amazon short link and expand it first
+      if AMAZON_SHORT_DOMAINS.include?(uri.host)
+        expanded_url = expand_amazon_short_link(url)
+        return apply(expanded_url) if expanded_url != url
+      end
+
       rule = rules[uri.host]
       return rule.call(url, uri) if rule
     end
 
     url
-  rescue StandardError
+  rescue StandardError => e
+    Rails.logger.warn "Failed to process affiliate URL #{url}: #{e.message}"
     url
   end
 end
